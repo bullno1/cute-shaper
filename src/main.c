@@ -3,7 +3,7 @@
 #include <string.h>
 
 #define MAX_NUM_VERTICES 128
-
+#define MAX_HISTORY_ENTRIES 128
 
 static const float VERT_SIZE = 5.f;
 
@@ -11,6 +11,17 @@ typedef struct {
 	CF_V2 verts[MAX_NUM_VERTICES];
 	int num_vertices;
 } shape_t;
+
+typedef struct {
+	shape_t shape;
+	uint64_t version;
+} shape_history_entry_t;
+
+typedef struct {
+	shape_history_entry_t entries[MAX_HISTORY_ENTRIES];
+	int current_index;
+	uint64_t current_version;
+} shape_history_t;
 
 typedef struct {
 	CF_V2* point;
@@ -100,6 +111,16 @@ start_mouse_drag(mouse_drag_info_t* drag_info) {
 	return coro;
 }
 
+static shape_t*
+commit_shape(shape_history_t* history) {
+	shape_history_entry_t* current_entry = &history->entries[history->current_index];
+	int next_index = (history->current_index + 1) % MAX_HISTORY_ENTRIES;
+	history->entries[next_index] = *current_entry;
+	history->entries[next_index].version = ++history->current_version;
+	history->current_index = next_index;
+	return &history->entries[next_index].shape;
+}
+
 int
 main(int argc, const char* argv[]) {
 	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT;
@@ -125,7 +146,8 @@ main(int argc, const char* argv[]) {
 	bool show_help = false;
 	CF_Coroutine mouse_coro = { 0 };
 
-	shape_t shape = { 0 };
+	shape_history_t history = { 0 };
+	shape_t* shape = &history.entries[history.current_index].shape;
 
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
@@ -138,15 +160,15 @@ main(int argc, const char* argv[]) {
 
 			cf_draw_sprite(&sprite);
 
-			cf_draw_polyline(shape.verts, shape.num_vertices, 0.2f, true);
+			cf_draw_polyline(shape->verts, shape->num_vertices, 0.2f, true);
 		cf_draw_pop();
 
 		CF_V2 mouse_world = cf_screen_to_world(cf_v2(cf_mouse_x(), cf_mouse_y()));
 
 		// Draw outside of transform for a consistent shape size
 		int hovered_vert = -1;
-		for (int i = 0; i < shape.num_vertices; ++i) {
-			CF_V2 vert = cf_mul(draw_transform, shape.verts[i]);
+		for (int i = 0; i < shape->num_vertices; ++i) {
+			CF_V2 vert = cf_mul(draw_transform, shape->verts[i]);
 
 			bool vert_hovered = cf_len(cf_sub(vert, mouse_world)) <= VERT_SIZE;
 			CF_Color vert_color = vert_hovered ? cf_color_green() : cf_color_white();
@@ -225,30 +247,32 @@ main(int argc, const char* argv[]) {
 					mouse_coro.id = 0;
 				}
 			} else {
-				if (cf_mouse_down(CF_MOUSE_BUTTON_MIDDLE)) {
+				if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_MIDDLE)) {
 					mouse_coro = start_mouse_drag(&(mouse_drag_info_t){
 						.point = &draw_offset,
 						.button = CF_MOUSE_BUTTON_MIDDLE,
 						.scale = 1.f,
 					});
-				} else if (cf_mouse_down(CF_MOUSE_BUTTON_LEFT)) {
+				} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_LEFT)) {
+					shape = commit_shape(&history);
+
 					CF_V2* dragged_vert = NULL;
 					if (hovered_vert >= 0) {
-						dragged_vert = &shape.verts[hovered_vert];
-					} else if (shape.num_vertices < MAX_NUM_VERTICES) {
+						dragged_vert = &shape->verts[hovered_vert];
+					} else if (shape->num_vertices < MAX_NUM_VERTICES) {
 						CF_V2 new_vert = cf_mul(cf_invert(draw_transform), mouse_world);
 
-						if (shape.num_vertices < 3) {
+						if (shape->num_vertices < 3) {
 							// Insert at the end
-							shape.verts[shape.num_vertices++] = new_vert;
-							dragged_vert = &shape.verts[shape.num_vertices - 1];
+							shape->verts[shape->num_vertices++] = new_vert;
+							dragged_vert = &shape->verts[shape->num_vertices - 1];
 						} else {
 							// Insert between the closest edge
 							float closest_distant_sq = 1.0f / 0.0f;
-							int insert_index = shape.num_vertices;
-							for (int i = 0; i < shape.num_vertices; ++i) {
-								CF_V2 a = shape.verts[i];
-								CF_V2 b = shape.verts[(i + 1) % shape.num_vertices];
+							int insert_index = shape->num_vertices;
+							for (int i = 0; i < shape->num_vertices; ++i) {
+								CF_V2 a = shape->verts[i];
+								CF_V2 b = shape->verts[(i + 1) % shape->num_vertices];
 
 								float distance_sq = point_to_segment_distance_squared(new_vert, a, b);
 								if (distance_sq < closest_distant_sq) {
@@ -258,13 +282,13 @@ main(int argc, const char* argv[]) {
 							}
 
 							memmove(
-								&shape.verts[insert_index + 2],
-								&shape.verts[insert_index + 1],
-								(shape.num_vertices - insert_index - 1) * sizeof(shape.verts[0])
+								&shape->verts[insert_index + 2],
+								&shape->verts[insert_index + 1],
+								(shape->num_vertices - insert_index - 1) * sizeof(shape->verts[0])
 							);
-							shape.verts[insert_index + 1] = new_vert;
-							++shape.num_vertices;
-							dragged_vert = &shape.verts[insert_index + 1];
+							shape->verts[insert_index + 1] = new_vert;
+							++shape->num_vertices;
+							dragged_vert = &shape->verts[insert_index + 1];
 						}
 					}
 
@@ -275,13 +299,29 @@ main(int argc, const char* argv[]) {
 							.scale = draw_scale,
 						});
 					}
-				} else if (cf_mouse_down(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {
+				} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {
+					shape = commit_shape(&history);
 					memmove(
-						&shape.verts[hovered_vert],
-						&shape.verts[hovered_vert + 1],
-						(shape.num_vertices - hovered_vert) * sizeof(shape.verts[0])
+						&shape->verts[hovered_vert],
+						&shape->verts[hovered_vert + 1],
+						(shape->num_vertices - hovered_vert) * sizeof(shape->verts[0])
 					);
-					--shape.num_vertices;
+					--shape->num_vertices;
+				} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X1)) {
+					int prev_index = history.current_index - 1;
+					if (prev_index < 0) { prev_index += MAX_HISTORY_ENTRIES; }
+					shape_history_entry_t* prev_entry = &history.entries[prev_index];
+					if (prev_entry->version < history.entries[history.current_index].version) {
+						history.current_index = prev_index;
+						shape = &prev_entry->shape;
+					}
+				} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X2)) {
+					int next_index = (history.current_index + 1) % MAX_HISTORY_ENTRIES;
+					shape_history_entry_t* next_entry = &history.entries[next_index];
+					if (next_entry->version > history.entries[history.current_index].version) {
+						history.current_index = next_index;
+						shape = &next_entry->shape;
+					}
 				} else if (cf_mouse_wheel_motion() != 0.f) {
 					draw_scale += cf_mouse_wheel_motion();
 				}
