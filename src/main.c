@@ -260,7 +260,7 @@ main(int argc, const char* argv[]) {
 							memmove(
 								&shape.verts[insert_index + 2],
 								&shape.verts[insert_index + 1],
-								(shape.num_vertices - insert_index) * sizeof(shape.verts[0])
+								(shape.num_vertices - insert_index - 1) * sizeof(shape.verts[0])
 							);
 							shape.verts[insert_index + 1] = new_vert;
 							++shape.num_vertices;
@@ -275,6 +275,13 @@ main(int argc, const char* argv[]) {
 							.scale = draw_scale,
 						});
 					}
+				} else if (cf_mouse_down(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {
+					memmove(
+						&shape.verts[hovered_vert],
+						&shape.verts[hovered_vert + 1],
+						(shape.num_vertices - hovered_vert) * sizeof(shape.verts[0])
+					);
+					--shape.num_vertices;
 				} else if (cf_mouse_wheel_motion() != 0.f) {
 					draw_scale += cf_mouse_wheel_motion();
 				}
