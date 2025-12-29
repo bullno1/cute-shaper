@@ -426,6 +426,7 @@ new_doc(CF_Coroutine coro) {
 		return;
 	}
 
+	cf_free(ctx.doc->filename);
 	memset(ctx.doc, 0, sizeof(*ctx.doc));
 	memset(ctx.history, 0, sizeof(*ctx.history));
 }
@@ -435,6 +436,55 @@ open_doc(CF_Coroutine coro) {
 	doc_modal_ctx_t ctx = *(doc_modal_ctx_t*)cf_coroutine_get_udata(coro);
 	if (!should_continue_after_saving_current_doc(coro, &ctx)) {
 		return;
+	}
+
+	nfdu8char_t* path = NULL;
+	nfdu8filteritem_t filters[] = {
+		{
+			.name = "JSON",
+			.spec = "json",
+		}
+	};
+	nfdresult_t open_result = NFD_OpenDialogU8(
+		&path,
+		filters, sizeof(filters) / sizeof(filters[0]),
+		NULL
+	);
+	if (open_result == NFD_OKAY) {
+		size_t size = 0;
+		void* content = load_file_into_memory(path, &size);
+		if (content != NULL) {
+			CF_JDoc jdoc = cf_make_json(content, size);
+
+			if (jdoc.id != 0) {
+				cf_free(ctx.doc->filename);
+				ctx.doc->filename = strclone(path);
+				ctx.doc->saved_version = 0;
+				memset(ctx.history, 0, sizeof(*ctx.history));
+				shape_t* shape = current_shape(ctx.history);
+
+				CF_JVal root = cf_json_get_root(jdoc);
+				CF_JVal vertices = cf_json_get(root, "vertices");
+				int num_vertices = cf_json_get_len(vertices);
+				for (int i = 0; i < num_vertices; ++i) {
+					CF_JVal jvert = cf_json_array_get(vertices, i);
+					CF_V2 vert = {
+						cf_json_get_float(cf_json_array_get(jvert, 0)),
+						cf_json_get_float(cf_json_array_get(jvert, 1)),
+					};
+					shape->verts[shape->num_vertices++] = vert;
+				}
+			} else {
+				show_error_popup(ctx.error_popup, "Could not load file");
+			}
+
+			cf_destroy_json(jdoc);
+		} else {
+			show_error_popup(ctx.error_popup, "Could not load file");
+		}
+		cf_free(content);
+	} else if (open_result == NFD_ERROR) {
+		show_error_popup(ctx.error_popup, NFD_GetError());
 	}
 }
 
@@ -610,7 +660,9 @@ main(int argc, const char* argv[]) {
 				"Left click: Add vertex\n"
 				"Right click: Remove vertex\n"
 				"Middle mouse drag: Pan\n"
-				"Scroll: Zoom"
+				"Scroll: Zoom\n"
+				"Back: Undo\n"
+				"Forward: Redo"
 			);
 			ImGui_EndPopup();
 		}
@@ -709,7 +761,7 @@ main(int argc, const char* argv[]) {
 					shape = &next_entry->shape;
 				}
 			} else if (cf_mouse_wheel_motion() != 0.f) {
-				draw_scale += cf_mouse_wheel_motion();
+				draw_scale += cf_mouse_wheel_motion() * 0.5;
 			}
 		}
 
@@ -750,19 +802,22 @@ main(int argc, const char* argv[]) {
 			} break;
 			case COMMAND_NOOP: break;
 		}
-		command = COMMAND_NOOP;
 
 		uint64_t shape_version = current_shape_version(&history);
 		if (
 			last_shape_version != shape_version
 			||
 			last_doc_version != doc.saved_version
+			||
+			command != COMMAND_NOOP
 		) {
 			set_title(&doc, shape_version);
 
 			last_shape_version = shape_version;
 			last_doc_version = doc.saved_version;
 		}
+
+		command = COMMAND_NOOP;
 
 		cf_app_draw_onto_screen(true);
 	}
