@@ -12,5 +12,4 @@ target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries")
 target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries/cimgui")
 target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries/cimgui/imgui")
 
-option(NFD_APPEND_EXTENSION "" ON)
 add_subdirectory("nativefiledialog-extended" EXCLUDE_FROM_ALL)
