@@ -8,7 +8,7 @@
 #define MAX_NUM_VERTICES 128
 #define MAX_HISTORY_ENTRIES 128
 
-static const float VERT_SIZE = 5.f;
+static const float VERT_SIZE = 8.f;
 
 typedef struct {
 	CF_V2 verts[MAX_NUM_VERTICES];
@@ -533,6 +533,7 @@ main(int argc, const char* argv[]) {
 
 		shape_t* shape = current_shape(&history);
 
+		// Draw sprite and collision shape
 		cf_draw_push();
 			cf_draw_translate_v2(draw_offset);
 			cf_draw_scale(draw_scale, draw_scale);
@@ -545,7 +546,7 @@ main(int argc, const char* argv[]) {
 
 		CF_V2 mouse_world = cf_screen_to_world(cf_v2(cf_mouse_x(), cf_mouse_y()));
 
-		// Draw outside of transform for a consistent shape size
+		// Draw vertices outside of transform for a consistent shape size
 		int hovered_vert = -1;
 		for (int i = 0; i < shape->num_vertices; ++i) {
 			CF_V2 vert = cf_mul(draw_transform, shape->verts[i]);
@@ -562,6 +563,38 @@ main(int argc, const char* argv[]) {
 			cf_draw_pop_color();
 		}
 
+		// Find the closest edge
+		int insert_index = shape->num_vertices;
+		{
+			float closest_distant_sq = 1.0f / 0.0f;
+			CF_V2 mouse = cf_mul(cf_invert(draw_transform), mouse_world);
+			for (int i = 0; i < shape->num_vertices; ++i) {
+				CF_V2 a = shape->verts[i];
+				CF_V2 b = shape->verts[(i + 1) % shape->num_vertices];
+
+				float distance_sq = point_to_segment_distance_squared(mouse, a, b);
+				if (distance_sq < closest_distant_sq) {
+					closest_distant_sq = distance_sq;
+					insert_index = i;
+				}
+			}
+		}
+
+		// Highlight the closest edge
+		if (hovered_vert == -1 && shape->num_vertices >= 3) {
+			cf_draw_push();
+			cf_draw_transform(draw_transform);
+			cf_draw_push_color(cf_color_green());
+
+			CF_V2 a = shape->verts[insert_index];
+			CF_V2 b = shape->verts[(insert_index + 1) % shape->num_vertices];
+			cf_draw_line(a, b, 1.f);
+
+			cf_draw_pop_color();
+			cf_draw_pop();
+		}
+
+		// ImGui
 		error_popup.id = ImGui_GetID("Error");
 		ImGuiID help_popup = ImGui_GetID("Help");
 		if (ImGui_BeginMainMenuBar()) {
@@ -684,6 +717,7 @@ main(int argc, const char* argv[]) {
 			}
 		}
 
+		// Vertex manipulation
 		if (modal_coro.id == 0 && !ImGui_GetIO()->WantCaptureMouse) {
 			if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_MIDDLE)) {
 				start_mouse_drag(&modal_coro, &(mouse_drag_info_t){
@@ -706,19 +740,6 @@ main(int argc, const char* argv[]) {
 						dragged_vert = &shape->verts[shape->num_vertices - 1];
 					} else {
 						// Insert between the closest edge
-						float closest_distant_sq = 1.0f / 0.0f;
-						int insert_index = shape->num_vertices;
-						for (int i = 0; i < shape->num_vertices; ++i) {
-							CF_V2 a = shape->verts[i];
-							CF_V2 b = shape->verts[(i + 1) % shape->num_vertices];
-
-							float distance_sq = point_to_segment_distance_squared(new_vert, a, b);
-							if (distance_sq < closest_distant_sq) {
-								closest_distant_sq = distance_sq;
-								insert_index = i;
-							}
-						}
-
 						memmove(
 							&shape->verts[insert_index + 2],
 							&shape->verts[insert_index + 1],
@@ -765,6 +786,7 @@ main(int argc, const char* argv[]) {
 			}
 		}
 
+		// Keyboard shortcut
 		if (modal_coro.id == 0 && !ImGui_GetIO()->WantCaptureKeyboard) {
 			if (cf_key_down(CF_KEY_LCTRL) || cf_key_down(CF_KEY_LCTRL)) {
 				if (cf_key_just_pressed(CF_KEY_N)) {
@@ -781,6 +803,7 @@ main(int argc, const char* argv[]) {
 			}
 		}
 
+		// Command execution
 		doc_modal_ctx_t modal_ctx = {
 			.error_popup = &error_popup,
 			.doc = &doc,
