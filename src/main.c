@@ -3,12 +3,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdarg.h>
+
+#ifndef __EMSCRIPTEN__
 #include <nfd.h>
+#endif
 
 #define MAX_NUM_VERTICES 128
 #define MAX_HISTORY_ENTRIES 128
-
-static const float VERT_SIZE = 8.f;
+#define VERT_SIZE 8.f
 
 typedef struct {
 	CF_V2 verts[MAX_NUM_VERTICES];
@@ -41,7 +43,7 @@ typedef struct {
 typedef struct {
 	const char* message;
 	ImGuiID id;
-} error_popup_t;
+} text_popup_t;
 
 typedef enum {
 	COMMAND_NOOP,
@@ -56,6 +58,96 @@ typedef enum {
 	SAVE_CANCELLED,
 	SAVE_ERROR,
 } save_result_t;
+
+#ifndef __EMSCRIPTEN__
+
+// Own loader because cf_fs is constrained by the VFS and remounting is troublesome
+static void*
+load_file_into_memory(const char* path, size_t* out_size) {
+	FILE *f = fopen(path, "rb");
+	if (f == NULL) { return NULL; }
+
+	if (fseek(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return NULL;
+	}
+
+	long size = ftell(f);
+	if (size < 0) {
+		fclose(f);
+		return NULL;
+	}
+	rewind(f);
+
+	void* data = cf_alloc((size_t)size);
+	if (!data) {
+		fclose(f);
+		return NULL;
+	}
+
+	size_t read = fread(data, 1, (size_t)size, f);
+	fclose(f);
+
+	if (read != (size_t)size) {
+		cf_free(data);
+		return NULL;
+	}
+
+	if (out_size != NULL) {
+		*out_size = (size_t)size;
+	}
+
+	return data;
+}
+
+static bool
+save_into_file(const char* path, const void* data, size_t size) {
+	FILE* f = fopen(path, "wb");
+	if (f == NULL) { return false; }
+
+	size_t written = fwrite(data, 1, size, f);
+	fclose(f);
+
+	return written == size;
+}
+
+static char*
+strprintf(const char* fmt, ...) {
+	va_list args, args_copy;
+	va_start(args, fmt);
+	va_copy(args_copy, args);
+	int size = vsnprintf(NULL, 0, fmt, args);
+	va_end(args);
+
+	char* result = cf_alloc(size + 1);
+	vsnprintf(result, size + 1, fmt, args_copy);
+	va_end(args_copy);
+
+	return result;
+}
+
+#else
+
+extern bool
+web_open_file(
+	const char* filter,
+	char** name,
+	void** content,
+	size_t* size
+);
+
+extern bool
+save_into_file(const char* path, const void* data, size_t size);
+
+#endif
+
+static char*
+strclone(const char* str) {
+	size_t len = strlen(str);
+	char* cpy = cf_alloc(len + 1);
+	memcpy(cpy, str, len + 1);
+	return cpy;
+}
 
 static bool
 str_ends_with(const char *str, const char *suffix) {
@@ -134,56 +226,6 @@ current_shape_version(shape_history_t* history) {
 	return history->entries[history->current_index].version;
 }
 
-// Own loader because cf_fs is constrained by the VFS and remounting is troublesome
-static void*
-load_file_into_memory(const char* path, size_t* out_size) {
-	FILE *f = fopen(path, "rb");
-	if (f == NULL) { return NULL; }
-
-	if (fseek(f, 0, SEEK_END) != 0) {
-		fclose(f);
-		return NULL;
-	}
-
-	long size = ftell(f);
-	if (size < 0) {
-		fclose(f);
-		return NULL;
-	}
-	rewind(f);
-
-	void* data = cf_alloc((size_t)size);
-	if (!data) {
-		fclose(f);
-		return NULL;
-	}
-
-	size_t read = fread(data, 1, (size_t)size, f);
-	fclose(f);
-
-	if (read != (size_t)size) {
-		cf_free(data);
-		return NULL;
-	}
-
-	if (out_size != NULL) {
-		*out_size = (size_t)size;
-	}
-
-	return data;
-}
-
-static bool
-save_memory_into_file(const char* path, const void* data, size_t size) {
-	FILE* f = fopen(path, "wb");
-	if (f == NULL) { return false; }
-
-	size_t written = fwrite(data, 1, size, f);
-	fclose(f);
-
-	return written == size;
-}
-
 static CF_Sprite
 load_sprite(const char* path, const void* content, size_t size) {
 	if (str_ends_with(path, ".ase") || str_ends_with(path, ".asperite")) {
@@ -222,37 +264,15 @@ set_title(const document_t* doc, uint64_t current_version) {
 	}
 }
 
-static char*
-strclone(const char* str) {
-	size_t len = strlen(str);
-	char* cpy = cf_alloc(len + 1);
-	memcpy(cpy, str, len + 1);
-	return cpy;
-}
-
-static char*
-strprintf(const char* fmt, ...) {
-	va_list args, args_copy;
-	va_start(args, fmt);
-	va_copy(args_copy, args);
-	int size = vsnprintf(NULL, 0, fmt, args);
-	va_end(args);
-
-	char* result = cf_realloc(title_buf, size + 1);
-	vsnprintf(result, size + 1, fmt, args_copy);
-	va_end(args_copy);
-
-	return result;
-}
-
 static void
-show_error_popup(error_popup_t* popup, const char* message) {
+show_text_popup(text_popup_t* popup, const char* message) {
 	popup->message = message;
 	ImGui_OpenPopupID(popup->id, ImGuiPopupFlags_None);
 }
 
 static save_result_t
-pick_save_target(error_popup_t* error_popup, document_t* doc) {
+pick_save_target(text_popup_t* text_popup, document_t* doc) {
+#ifndef __EMSCRIPTEN__
 	nfdu8char_t* path = NULL;
 	nfdu8filteritem_t filters[] = {
 		{
@@ -278,15 +298,18 @@ pick_save_target(error_popup_t* error_popup, document_t* doc) {
 		NFD_FreePathU8(path);
 		return SAVE_OK;
 	} else if (save_result == NFD_ERROR) {
-		show_error_popup(error_popup, NFD_GetError());
+		show_text_popup(text_popup, NFD_GetError());
 		return SAVE_ERROR;
 	} else {
 		return SAVE_CANCELLED;
 	}
+#else
+	return SAVE_OK;
+#endif
 }
 
 typedef struct {
-	error_popup_t* error_popup;
+	text_popup_t* text_popup;
 	document_t* doc;
 	shape_history_t* history;
 } doc_modal_ctx_t;
@@ -313,8 +336,8 @@ do_save_doc(doc_modal_ctx_t* ctx) {
 
 	save_result_t save_result = SAVE_OK;
 	dyna char* content = cf_json_to_string(jdoc);
-	if (!save_memory_into_file(ctx->doc->filename, content, slen(content))) {
-		show_error_popup(ctx->error_popup, "Could not save file");
+	if (!save_into_file(ctx->doc->filename, content, slen(content))) {
+		show_text_popup(ctx->text_popup, "Could not save file");
 		save_result = SAVE_ERROR;
 	}
 	sfree(content);
@@ -331,7 +354,7 @@ do_save_doc(doc_modal_ctx_t* ctx) {
 static save_result_t
 save_doc_as(doc_modal_ctx_t* ctx) {
 	save_result_t save_result;
-	if ((save_result = pick_save_target(ctx->error_popup, ctx->doc)) == SAVE_OK) {
+	if ((save_result = pick_save_target(ctx->text_popup, ctx->doc)) == SAVE_OK) {
 		return do_save_doc(ctx);
 	} else {
 		return save_result;
@@ -432,12 +455,40 @@ new_doc(CF_Coroutine coro) {
 }
 
 static void
+load_doc(doc_modal_ctx_t* ctx, const char* path, const void* content, size_t size) {
+	CF_JDoc jdoc = cf_make_json(content, size);
+
+	if (jdoc.id != 0) {
+		cf_free(ctx->doc->filename);
+		ctx->doc->filename = strclone(path);
+		ctx->doc->saved_version = 0;
+		memset(ctx->history, 0, sizeof(*ctx->history));
+		shape_t* shape = current_shape(ctx->history);
+
+		CF_JVal root = cf_json_get_root(jdoc);
+		CF_JVal vertices = cf_json_get(root, "vertices");
+		int num_vertices = cf_json_get_len(vertices);
+		for (int i = 0; i < num_vertices; ++i) {
+			CF_JVal jvert = cf_json_array_get(vertices, i);
+			CF_V2 vert = {
+				cf_json_get_float(cf_json_array_get(jvert, 0)),
+				cf_json_get_float(cf_json_array_get(jvert, 1)),
+			};
+			shape->verts[shape->num_vertices++] = vert;
+		}
+	} else {
+		show_text_popup(ctx->text_popup, "Could not load file");
+	}
+}
+
+static void
 open_doc(CF_Coroutine coro) {
 	doc_modal_ctx_t ctx = *(doc_modal_ctx_t*)cf_coroutine_get_udata(coro);
 	if (!should_continue_after_saving_current_doc(coro, &ctx)) {
 		return;
 	}
 
+#ifndef __EMSCRIPTEN__
 	nfdu8char_t* path = NULL;
 	nfdu8filteritem_t filters[] = {
 		{
@@ -454,38 +505,24 @@ open_doc(CF_Coroutine coro) {
 		size_t size = 0;
 		void* content = load_file_into_memory(path, &size);
 		if (content != NULL) {
-			CF_JDoc jdoc = cf_make_json(content, size);
-
-			if (jdoc.id != 0) {
-				cf_free(ctx.doc->filename);
-				ctx.doc->filename = strclone(path);
-				ctx.doc->saved_version = 0;
-				memset(ctx.history, 0, sizeof(*ctx.history));
-				shape_t* shape = current_shape(ctx.history);
-
-				CF_JVal root = cf_json_get_root(jdoc);
-				CF_JVal vertices = cf_json_get(root, "vertices");
-				int num_vertices = cf_json_get_len(vertices);
-				for (int i = 0; i < num_vertices; ++i) {
-					CF_JVal jvert = cf_json_array_get(vertices, i);
-					CF_V2 vert = {
-						cf_json_get_float(cf_json_array_get(jvert, 0)),
-						cf_json_get_float(cf_json_array_get(jvert, 1)),
-					};
-					shape->verts[shape->num_vertices++] = vert;
-				}
-			} else {
-				show_error_popup(ctx.error_popup, "Could not load file");
-			}
-
-			cf_destroy_json(jdoc);
+			load_doc(&ctx, path, content, size);
 		} else {
-			show_error_popup(ctx.error_popup, "Could not load file");
+			show_text_popup(ctx.text_popup, "Could not load file");
 		}
 		cf_free(content);
 	} else if (open_result == NFD_ERROR) {
-		show_error_popup(ctx.error_popup, NFD_GetError());
+		show_text_popup(ctx.text_popup, NFD_GetError());
 	}
+#else
+	char* filename = NULL;
+	void* content = NULL;
+	size_t size;
+	if (web_open_file(".json", &filename, &content, &size)) {
+		load_doc(&ctx, filename, content, size);
+	}
+	free(filename);
+	free(content);
+#endif
 }
 
 static void
@@ -495,7 +532,9 @@ start_doc_modal(CF_Coroutine* modal_coro, CF_CoroutineFn fn, doc_modal_ctx_t* ct
 
 int
 main(int argc, const char* argv[]) {
+#ifndef __EMSCRIPTEN__
 	NFD_Init();
+#endif
 
 	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT;
 	cf_make_app("cute shaper", 0, 0, 0, 640, 480, options, argv[0]);
@@ -509,15 +548,14 @@ main(int argc, const char* argv[]) {
 	CF_Sprite demo_sprite = cf_make_demo_sprite();
 	CF_Sprite sprite = demo_sprite;
 
-	int animation_index = 3;
-	(void)animation_index;
 	cf_sprite_play(&sprite, "hold_down");
 	float draw_scale = 1.f;
 	CF_V2 draw_offset = { 0.f, 0.f };
 
 	CF_Coroutine modal_coro = { 0 };
 
-	shape_history_t history = { 0 };
+	shape_history_t* history = cf_alloc(sizeof(shape_history_t));
+	*history = (shape_history_t){ 0 };
 
 	document_t doc = { 0 };
 	uint64_t last_shape_version = 0;
@@ -525,13 +563,13 @@ main(int argc, const char* argv[]) {
 	set_title(&doc, 0);
 
 	command_t command = COMMAND_NOOP;
-	error_popup_t error_popup = { 0 };
+	text_popup_t text_popup = { 0 };
 
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
 		cf_sprite_update(&sprite);
 
-		shape_t* shape = current_shape(&history);
+		shape_t* shape = current_shape(history);
 
 		// Draw sprite and collision shape
 		cf_draw_push();
@@ -595,7 +633,7 @@ main(int argc, const char* argv[]) {
 		}
 
 		// ImGui
-		error_popup.id = ImGui_GetID("Error");
+		text_popup.id = ImGui_GetID("Error");
 		ImGuiID help_popup = ImGui_GetID("Help");
 		if (ImGui_BeginMainMenuBar()) {
 			if (ImGui_BeginMenu("File")) {
@@ -620,6 +658,7 @@ main(int argc, const char* argv[]) {
 
 			if (ImGui_BeginMenu("Sprite")) {
 				if (ImGui_MenuItem("Load")) {
+					#ifndef __EMSCRIPTEN__
 					nfdu8char_t* path = NULL;
 					nfdu8filteritem_t filters[] = {
 						{
@@ -653,18 +692,38 @@ main(int argc, const char* argv[]) {
 								}
 								sprite = new_sprite;
 							} else {
-								show_error_popup(&error_popup, "Could not load sprite");
+								show_text_popup(&text_popup, "Could not load sprite");
 							}
 
 							cf_free(content);
 						} else {
-							show_error_popup(&error_popup, "Could not read file");
+							show_text_popup(&text_popup, "Could not read file");
 						}
 
 						NFD_FreePathU8(path);
 					} else if (open_result == NFD_ERROR) {
-						show_error_popup(&error_popup, NFD_GetError());
+						show_text_popup(&text_popup, NFD_GetError());
 					}
+					#else
+					char* filename = NULL;
+					void* content = NULL;
+					size_t size;
+					if (web_open_file(".ase,.aseprite,.png", &filename, &content, &size)) {
+						CF_Sprite new_sprite = load_sprite(filename, content, size);
+						if (new_sprite.name) {
+							if (strcmp(sprite.name, "easy_sprite") == 0) {
+								cf_easy_sprite_unload(&sprite);
+							} else if (sprite.name != demo_sprite.name) {
+								cf_sprite_unload(sprite.name);
+							}
+							sprite = new_sprite;
+						} else {
+							show_text_popup(&text_popup, "Could not load sprite");
+						}
+					}
+					free(filename);
+					free(content);
+					#endif
 				}
 
 				int num_anims = hsize(sprite.animations);
@@ -701,7 +760,7 @@ main(int argc, const char* argv[]) {
 		}
 
 		if (ImGui_BeginPopupModal("Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui_Text("%s", error_popup.message);
+			ImGui_Text("%s", text_popup.message);
 
 			if (ImGui_Button("Ok")) {
 				ImGui_CloseCurrentPopup();
@@ -726,7 +785,7 @@ main(int argc, const char* argv[]) {
 					.scale = 1.f,
 				});
 			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_LEFT)) {
-				shape = commit_shape(&history);
+				shape = commit_shape(history);
 
 				CF_V2* dragged_vert = NULL;
 				if (hovered_vert >= 0) {
@@ -759,7 +818,7 @@ main(int argc, const char* argv[]) {
 					});
 				}
 			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {
-				shape = commit_shape(&history);
+				shape = commit_shape(history);
 				memmove(
 					&shape->verts[hovered_vert],
 					&shape->verts[hovered_vert + 1],
@@ -767,18 +826,18 @@ main(int argc, const char* argv[]) {
 				);
 				--shape->num_vertices;
 			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X1)) {
-				int prev_index = history.current_index - 1;
+				int prev_index = history->current_index - 1;
 				if (prev_index < 0) { prev_index += MAX_HISTORY_ENTRIES; }
-				shape_history_entry_t* prev_entry = &history.entries[prev_index];
-				if (prev_entry->version < history.entries[history.current_index].version) {
-					history.current_index = prev_index;
+				shape_history_entry_t* prev_entry = &history->entries[prev_index];
+				if (prev_entry->version < history->entries[history->current_index].version) {
+					history->current_index = prev_index;
 					shape = &prev_entry->shape;
 				}
 			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X2)) {
-				int next_index = (history.current_index + 1) % MAX_HISTORY_ENTRIES;
-				shape_history_entry_t* next_entry = &history.entries[next_index];
-				if (next_entry->version > history.entries[history.current_index].version) {
-					history.current_index = next_index;
+				int next_index = (history->current_index + 1) % MAX_HISTORY_ENTRIES;
+				shape_history_entry_t* next_entry = &history->entries[next_index];
+				if (next_entry->version > history->entries[history->current_index].version) {
+					history->current_index = next_index;
 					shape = &next_entry->shape;
 				}
 			} else if (cf_mouse_wheel_motion() != 0.f) {
@@ -805,9 +864,9 @@ main(int argc, const char* argv[]) {
 
 		// Command execution
 		doc_modal_ctx_t modal_ctx = {
-			.error_popup = &error_popup,
+			.text_popup = &text_popup,
 			.doc = &doc,
-			.history = &history,
+			.history = history,
 		};
 
 		switch (command) {
@@ -826,7 +885,7 @@ main(int argc, const char* argv[]) {
 			case COMMAND_NOOP: break;
 		}
 
-		uint64_t shape_version = current_shape_version(&history);
+		uint64_t shape_version = current_shape_version(history);
 		if (
 			last_shape_version != shape_version
 			||
@@ -850,7 +909,12 @@ main(int argc, const char* argv[]) {
 	}
 
 	cf_destroy_app();
+
+#ifndef __EMSCRIPTEN__
 	NFD_Quit();
+#endif
+
+	cf_free(history);
 	cf_free(title_buf);
 	cf_free(doc.filename);
 

@@ -13,4 +13,6 @@ target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries")
 target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries/cimgui")
 target_include_directories(cute SYSTEM PUBLIC BEFORE "cute_framework/libraries/cimgui/imgui")
 
-add_subdirectory("nativefiledialog-extended" EXCLUDE_FROM_ALL)
+if (NOT EMSCRIPTEN)
+	add_subdirectory("nativefiledialog-extended" EXCLUDE_FROM_ALL)
+endif ()
