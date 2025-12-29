@@ -50,6 +50,11 @@ jobs:
       - name: Build
         run: |
           ./build-web
+      - name: Upload static files as artifact
+        id: deployment
+        uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
+        with:
+          path: bin/RelWithDebInfo/
   build-windows:
     runs-on: windows-latest
     steps:
@@ -68,3 +73,13 @@ jobs:
           call "%VS_DIR%\VC\Auxiliary\Build\vcvarsall.bat" x64 10.0.22621.0
           cd msvc
           msbuild cute-shaper.sln /property:Configuration=RelWithDebInfo /property:Platform=x64
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build-web
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
