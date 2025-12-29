@@ -1,6 +1,7 @@
 #include <cute.h>
 #include <dcimgui.h>
 #include <string.h>
+#include <stdio.h>
 #include <nfd.h>
 
 #define MAX_NUM_VERTICES 128
@@ -29,6 +30,16 @@ typedef struct {
 	float scale;
 	CF_MouseButton button;
 } mouse_drag_info_t;
+
+static bool
+str_ends_with(const char *str, const char *suffix) {
+	if (!str || !suffix) { return false; }
+	size_t lenstr = strlen(str);
+	size_t lensuffix = strlen(suffix);
+	if (lensuffix > lenstr) { return false; }
+
+	return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
+}
 
 static float
 point_to_segment_distance_squared(CF_V2 p, CF_V2 a, CF_V2 b) {
@@ -82,6 +93,67 @@ commit_shape(shape_history_t* history) {
 	return &history->entries[next_index].shape;
 }
 
+// Own loader because cf_fs is constrained by the VFS and remounting is troublesome
+static void*
+load_file_into_memory(const char* path, size_t* out_size) {
+	FILE *f = fopen(path, "rb");
+	if (f == NULL) { return NULL; }
+
+	if (fseek(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return NULL;
+	}
+
+	long size = ftell(f);
+	if (size < 0) {
+		fclose(f);
+		return NULL;
+	}
+	rewind(f);
+
+	void* data = cf_alloc((size_t)size);
+	if (!data) {
+		fclose(f);
+		return NULL;
+	}
+
+	size_t read = fread(data, 1, (size_t)size, f);
+	fclose(f);
+
+	if (read != (size_t)size) {
+		cf_free(data);
+		return NULL;
+	}
+
+	if (out_size != NULL) {
+		*out_size = (size_t)size;
+	}
+
+	return data;
+}
+
+static CF_Sprite
+load_sprite(const char* path, const void* content, size_t size) {
+	if (str_ends_with(path, ".ase") || str_ends_with(path, ".asperite")) {
+		return cf_make_sprite_from_memory(
+			path,
+			content, size
+		);
+	} else if (str_ends_with(path, ".png")) {
+		CF_Sprite sprite = cf_sprite_defaults();
+		CF_Image img;
+		CF_Result result = cf_image_load_png_from_memory(content, size, &img);
+		if (!cf_is_error(result)) {
+			sprite = cf_make_easy_sprite_from_pixels(img.pix, img.w, img.h);
+			cf_image_premultiply(&img);
+		}
+		cf_image_free(&img);
+		return sprite;
+	} else {
+		return cf_sprite_defaults();
+	}
+}
+
 int
 main(int argc, const char* argv[]) {
 	NFD_Init();
@@ -95,7 +167,8 @@ main(int argc, const char* argv[]) {
 
 	int sprite_index = 0;
 	(void)sprite_index;
-	CF_Sprite sprite = cf_make_demo_sprite();
+	CF_Sprite demo_sprite = cf_make_demo_sprite();
+	CF_Sprite sprite = demo_sprite;
 
 	int animation_index = 3;
 	(void)animation_index;
@@ -103,11 +176,12 @@ main(int argc, const char* argv[]) {
 	float draw_scale = 1.f;
 	CF_V2 draw_offset = { 0.f, 0.f };
 
-	bool show_help = false;
 	CF_Coroutine mouse_coro = { 0 };
 
 	shape_history_t history = { 0 };
 	shape_t* shape = &history.entries[history.current_index].shape;
+
+	const char* last_error = NULL;
 
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
@@ -142,6 +216,8 @@ main(int argc, const char* argv[]) {
 			cf_draw_pop_color();
 		}
 
+		ImGuiID error_popup = ImGui_GetID("Error");
+		ImGuiID help_popup = ImGui_GetID("Help");
 		if (ImGui_BeginMainMenuBar()) {
 			if (ImGui_BeginMenu("File")) {
 				if (ImGui_MenuItem("New")) {
@@ -157,9 +233,59 @@ main(int argc, const char* argv[]) {
 
 			if (ImGui_BeginMenu("Sprite")) {
 				if (ImGui_MenuItem("Load")) {
+					nfdu8char_t* path = NULL;
+					nfdu8filteritem_t filters[] = {
+						{
+							.name = "All supported sprites",
+							.spec = "ase,aseprite,png",
+						},
+						{
+							.name = "aseprite",
+							.spec = "ase,aseprite",
+						},
+						{
+							.name = "png",
+							.spec = "png",
+						}
+					};
+					const char* default_path = cf_fs_get_base_directory();
+					nfdresult_t open_result = NFD_OpenDialogU8(
+						&path,
+						filters, sizeof(filters) / sizeof(filters[0]),
+						default_path
+					);
+					if (open_result == NFD_OKAY) {
+						size_t size = 0;
+						void* content = load_file_into_memory(path, &size);
+						if (content != NULL) {
+							CF_Sprite new_sprite = load_sprite(path, content, size);
+							if (new_sprite.name) {
+								if (strcmp(sprite.name, "easy_sprite") == 0) {
+									cf_easy_sprite_unload(&sprite);
+								} else if (sprite.name != demo_sprite.name) {
+									cf_sprite_unload(sprite.name);
+								}
+								sprite = new_sprite;
+							} else {
+								last_error = "Could not load sprite";
+								ImGui_OpenPopupID(error_popup, ImGuiPopupFlags_None);
+							}
+
+							cf_free(content);
+						} else {
+							last_error = "Could not read file";
+							ImGui_OpenPopupID(error_popup, ImGuiPopupFlags_None);
+						}
+
+						NFD_FreePathU8(path);
+					} else if (open_result == NFD_ERROR) {
+						last_error = NFD_GetError();
+						ImGui_OpenPopupID(error_popup, ImGuiPopupFlags_None);
+					}
 				}
 
-				if (ImGui_BeginMenu("Animation")) {
+				int num_anims = hsize(sprite.animations);
+				if (ImGui_BeginMenuEx("Animation", num_anims > 0)) {
 					for (int i = 0; i < hsize(sprite.animations); ++i) {
 						if (ImGui_MenuItem(sprite.animations[i]->name)) {
 							cf_sprite_play(&sprite, sprite.animations[i]->name);
@@ -172,23 +298,30 @@ main(int argc, const char* argv[]) {
 
 			if (ImGui_BeginMenu("Help")) {
 				if (ImGui_MenuItem("How to use")) {
-					show_help = true;
+					ImGui_OpenPopupID(help_popup, ImGuiPopupFlags_AnyPopup);
 				}
 				ImGui_EndMenu();
 			}
 			ImGui_EndMainMenuBar();
 		}
 
-		if (show_help) {
-			if (ImGui_Begin("Help", &show_help, ImGuiWindowFlags_AlwaysAutoResize)) {
-				ImGui_Text(
-					"Left click: Add vertex\n"
-					"Right click: Remove vertex\n"
-					"Middle mouse drag: Pan\n"
-					"Scroll: Zoom"
-				);
+		if (ImGui_BeginPopup("Help", ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui_Text(
+				"Left click: Add vertex\n"
+				"Right click: Remove vertex\n"
+				"Middle mouse drag: Pan\n"
+				"Scroll: Zoom"
+			);
+			ImGui_EndPopup();
+		}
+
+		if (ImGui_BeginPopupModal("Error", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui_Text("%s", last_error);
+
+			if (ImGui_Button("Ok")) {
+				ImGui_CloseCurrentPopup();
 			}
-			ImGui_End();
+			ImGui_EndPopup();
 		}
 
 		if (!ImGui_GetIO()->WantCaptureMouse) {
