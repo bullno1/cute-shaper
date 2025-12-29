@@ -86,6 +86,13 @@ point_to_segment_distance_squared(CF_V2 p, CF_V2 a, CF_V2 b) {
 }
 
 static void
+start_modal(CF_Coroutine* modal_coro, CF_CoroutineFn fn, void* context) {
+	if (modal_coro->id != 0) { return; }
+	*modal_coro = cf_make_coroutine(fn, 0, context);
+	cf_coroutine_resume(*modal_coro);  // Let it copy the userdata before it goes out of scope
+}
+
+static void
 mouse_drag_point(CF_Coroutine coro) {
 	mouse_drag_info_t drag_info = *(mouse_drag_info_t*)cf_coroutine_get_udata(coro);
 	CF_V2 original_value = *drag_info.point;
@@ -104,10 +111,7 @@ mouse_drag_point(CF_Coroutine coro) {
 
 static void
 start_mouse_drag(CF_Coroutine* modal_coro, mouse_drag_info_t* drag_info) {
-	if (modal_coro->id != 0) { return; }
-
-	*modal_coro = cf_make_coroutine(mouse_drag_point, 0, drag_info);
-	cf_coroutine_resume(*modal_coro);  // Let it copy the userdata before it goes out of scope
+	start_modal(modal_coro, mouse_drag_point, drag_info);
 }
 
 static shape_t*
@@ -118,6 +122,16 @@ commit_shape(shape_history_t* history) {
 	history->entries[next_index].version = ++history->current_version;
 	history->current_index = next_index;
 	return &history->entries[next_index].shape;
+}
+
+static shape_t*
+current_shape(shape_history_t* history) {
+	return &history->entries[history->current_index].shape;
+}
+
+static uint64_t
+current_shape_version(shape_history_t* history) {
+	return history->entries[history->current_index].version;
 }
 
 // Own loader because cf_fs is constrained by the VFS and remounting is troublesome
@@ -271,8 +285,14 @@ pick_save_target(error_popup_t* error_popup, document_t* doc) {
 	}
 }
 
+typedef struct {
+	error_popup_t* error_popup;
+	document_t* doc;
+	shape_history_t* history;
+} doc_modal_ctx_t;
+
 static save_result_t
-do_save_doc(error_popup_t* error_popup, document_t* doc, const shape_t* shape) {
+do_save_doc(doc_modal_ctx_t* ctx) {
 	CF_JDoc jdoc = cf_make_json(NULL, 0);
 	CF_JVal root = cf_json_object(jdoc);
 	cf_json_set_root(jdoc, root);
@@ -282,6 +302,7 @@ do_save_doc(error_popup_t* error_popup, document_t* doc, const shape_t* shape) {
 	CF_JVal verts = cf_json_array(jdoc);
 	cf_json_object_add(jdoc, root, "vertices", verts);
 
+	shape_t* shape = current_shape(ctx->history);
 	for (int i = 0; i < shape->num_vertices; ++i) {
 		float data[] = { shape->verts[i].x, shape->verts[i].y };
 		CF_JVal vert = cf_json_array_from_float(
@@ -292,33 +313,134 @@ do_save_doc(error_popup_t* error_popup, document_t* doc, const shape_t* shape) {
 
 	save_result_t save_result = SAVE_OK;
 	dyna char* content = cf_json_to_string(jdoc);
-	if (!save_memory_into_file(doc->filename, content, slen(content))) {
-		show_error_popup(error_popup, "Could not save file");
+	if (!save_memory_into_file(ctx->doc->filename, content, slen(content))) {
+		show_error_popup(ctx->error_popup, "Could not save file");
 		save_result = SAVE_ERROR;
 	}
 	sfree(content);
 
 	cf_destroy_json(jdoc);
+
+	if (save_result == SAVE_OK) {
+		ctx->doc->saved_version = current_shape_version(ctx->history);
+	}
+
 	return save_result;
 }
 
 static save_result_t
-save_doc_as(error_popup_t* error_popup, document_t* doc, const shape_t* shape) {
+save_doc_as(doc_modal_ctx_t* ctx) {
 	save_result_t save_result;
-	if ((save_result = pick_save_target(error_popup, doc)) == SAVE_OK) {
-		return do_save_doc(error_popup, doc, shape);
+	if ((save_result = pick_save_target(ctx->error_popup, ctx->doc)) == SAVE_OK) {
+		return do_save_doc(ctx);
 	} else {
 		return save_result;
 	}
 }
 
-static bool
-save_doc(error_popup_t* error_popup, document_t* doc, const shape_t* shape) {
-	if (doc->filename == NULL) {
-		return save_doc_as(error_popup, doc, shape);
+static save_result_t
+save_doc(doc_modal_ctx_t* ctx) {
+	if (ctx->doc->filename == NULL) {
+		return save_doc_as(ctx);
 	} else {
-		return do_save_doc(error_popup, doc, shape);
+		return do_save_doc(ctx);
 	}
+}
+
+typedef enum {
+	MODAL_CHOICE_NONE,
+	MODAL_CHOICE_YES,
+	MODAL_CHOICE_NO,
+	MODAL_CHOICE_CANCEL,
+} modal_choice_t;
+
+static modal_choice_t
+modal_confirm(CF_Coroutine coro, const char* message, bool may_cancel) {
+	ImGui_OpenPopup("Confirmation", ImGuiPopupFlags_AnyPopup);
+
+	modal_choice_t choice = MODAL_CHOICE_NONE;
+	while (choice == MODAL_CHOICE_NONE) {
+		if (ImGui_BeginPopupModal("Confirmation", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+			ImGui_Text("%s", message);
+			if (ImGui_Button("Yes")) {
+				choice = MODAL_CHOICE_YES;
+			}
+
+			if (ImGui_Button("No")) {
+				choice = MODAL_CHOICE_NO;
+			}
+
+			if (may_cancel && ImGui_Button("Cancel")) {
+				choice = MODAL_CHOICE_CANCEL;
+			}
+
+			ImGui_EndPopup();
+		}
+		cf_coroutine_yield(coro);
+	}
+
+	return choice;
+}
+
+static bool
+should_continue_after_saving_current_doc(
+	CF_Coroutine coro,
+	doc_modal_ctx_t* ctx
+) {
+	if (ctx->doc->saved_version == current_shape_version(ctx->history)) {
+		return true;
+	}
+
+	modal_choice_t choice = modal_confirm(
+		coro,
+		"There are unsaved changes.\n\n"
+		"Do you want to save first?",
+		true
+	);
+
+	if (choice == MODAL_CHOICE_YES) {
+		save_result_t save_result = save_doc(ctx);
+		if (save_result == SAVE_CANCELLED) {
+			return false;
+		} else if (save_result == SAVE_ERROR) {
+			return modal_confirm(
+				coro,
+				"Could not save changes.\n\n"
+				"Do you want to continue?",
+				false
+			) == MODAL_CHOICE_YES;
+		} else {
+			return true;
+		}
+	} else if (choice == MODAL_CHOICE_NO) {
+		return true;
+	} else {
+		return false;
+	}
+}
+
+static void
+new_doc(CF_Coroutine coro) {
+	doc_modal_ctx_t ctx = *(doc_modal_ctx_t*)cf_coroutine_get_udata(coro);
+	if (!should_continue_after_saving_current_doc(coro, &ctx)) {
+		return;
+	}
+
+	memset(ctx.doc, 0, sizeof(*ctx.doc));
+	memset(ctx.history, 0, sizeof(*ctx.history));
+}
+
+static void
+open_doc(CF_Coroutine coro) {
+	doc_modal_ctx_t ctx = *(doc_modal_ctx_t*)cf_coroutine_get_udata(coro);
+	if (!should_continue_after_saving_current_doc(coro, &ctx)) {
+		return;
+	}
+}
+
+static void
+start_doc_modal(CF_Coroutine* modal_coro, CF_CoroutineFn fn, doc_modal_ctx_t* ctx) {
+	start_modal(modal_coro, fn, ctx);
 }
 
 int
@@ -346,7 +468,6 @@ main(int argc, const char* argv[]) {
 	CF_Coroutine modal_coro = { 0 };
 
 	shape_history_t history = { 0 };
-	shape_t* shape = &history.entries[history.current_index].shape;
 
 	document_t doc = { 0 };
 	uint64_t last_shape_version = 0;
@@ -359,6 +480,8 @@ main(int argc, const char* argv[]) {
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
 		cf_sprite_update(&sprite);
+
+		shape_t* shape = current_shape(&history);
 
 		cf_draw_push();
 			cf_draw_translate_v2(draw_offset);
@@ -606,29 +729,30 @@ main(int argc, const char* argv[]) {
 			}
 		}
 
-		const uint64_t shape_version = history.entries[history.current_index].version;
+		doc_modal_ctx_t modal_ctx = {
+			.error_popup = &error_popup,
+			.doc = &doc,
+			.history = &history,
+		};
 
 		switch (command) {
 			case COMMAND_NEW: {
-				/*new_doc(&modal_coro, &error_popup, &doc, &history);*/
+				start_doc_modal(&modal_coro, new_doc, &modal_ctx);
 			} break;
 			case COMMAND_OPEN: {
-				/*open_doc(&modal_coro, &error_popup, &doc, &history);*/
+				start_doc_modal(&modal_coro, open_doc, &modal_ctx);
 			} break;
 			case COMMAND_SAVE: {
-				if (save_doc(&error_popup, &doc, shape) == SAVE_OK) {
-					doc.saved_version = shape_version;
-				}
+				save_doc(&modal_ctx);
 			} break;
 			case COMMAND_SAVE_AS: {
-				if (save_doc_as(&error_popup, &doc, shape) == SAVE_OK) {
-					doc.saved_version = shape_version;
-				}
+				save_doc_as(&modal_ctx);
 			} break;
 			case COMMAND_NOOP: break;
 		}
 		command = COMMAND_NOOP;
 
+		uint64_t shape_version = current_shape_version(&history);
 		if (
 			last_shape_version != shape_version
 			||
