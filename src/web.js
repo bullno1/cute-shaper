@@ -33,8 +33,7 @@ addToLibrary({
 						resolve(Array.from(input.files));
 					}, {once: true});
 
-					document.body.addEventListener("focus", (event) => {
-						console.log("Return");
+					input.addEventListener("cancel", (event) => {
 						resolve([]);
 					}, {once: true});
 				});
