@@ -1,6 +1,7 @@
 #include <cute.h>
 #include <dcimgui.h>
 #include <string.h>
+#include <nfd.h>
 
 #define MAX_NUM_VERTICES 128
 #define MAX_HISTORY_ENTRIES 128
@@ -29,16 +30,6 @@ typedef struct {
 	CF_MouseButton button;
 } mouse_drag_info_t;
 
-static bool
-str_ends_with(const char *str, const char *suffix) {
-	if (!str || !suffix) { return false; }
-	size_t lenstr = strlen(str);
-	size_t lensuffix = strlen(suffix);
-	if (lensuffix > lenstr) { return false; }
-
-	return strncmp(str + lenstr - lensuffix, suffix, lensuffix) == 0;
-}
-
 static float
 point_to_segment_distance_squared(CF_V2 p, CF_V2 a, CF_V2 b) {
     CF_V2 ab = cf_sub(b, a);
@@ -55,36 +46,6 @@ point_to_segment_distance_squared(CF_V2 p, CF_V2 a, CF_V2 b) {
 	CF_V2 d = cf_sub(p, closest);
 
     return cf_dot(d, d);
-}
-
-static void
-scan_for_sprites(dyna const char*** sprites) {
-	cf_array_clear(*sprites);
-	const char* name = cf_sintern("demo_sprite");
-	cf_array_push(*sprites, name);
-
-	const char** files = cf_fs_enumerate_directory("/");
-	for (const char** itr = files; *itr != NULL; ++itr) {
-		if (
-			str_ends_with(*itr, ".ase")
-			||
-			str_ends_with(*itr, ".aseprite")
-			||
-			str_ends_with(*itr, ".png")
-		) {
-			const char* name = cf_sintern(*itr);
-			cf_array_push(*sprites, name);
-		}
-	}
-	cf_fs_free_enumerated_directory(files);
-}
-
-static void
-scan_for_animations(CF_Sprite* sprite, dyna const char*** animations) {
-	cf_array_clear(*animations);
-	for (int i = 0; i < hsize(sprite->animations); ++i) {
-		cf_array_push(*animations, sprite->animations[i]->name);
-	}
 }
 
 static void
@@ -123,6 +84,8 @@ commit_shape(shape_history_t* history) {
 
 int
 main(int argc, const char* argv[]) {
+	NFD_Init();
+
 	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT;
 	cf_make_app("cute shaper", 0, 0, 0, 640, 480, options, argv[0]);
 	cf_fs_mount(cf_fs_get_working_directory(), "/", true);
@@ -130,15 +93,12 @@ main(int argc, const char* argv[]) {
 	cf_clear_color(0.5f, 0.5f, 0.5f, 0.f);
 	cf_app_init_imgui();
 
-	dyna const char** sprites = NULL;
-	scan_for_sprites(&sprites);
-
 	int sprite_index = 0;
+	(void)sprite_index;
 	CF_Sprite sprite = cf_make_demo_sprite();
 
-	dyna const char** animations = NULL;
-	scan_for_animations(&sprite, &animations);
 	int animation_index = 3;
+	(void)animation_index;
 	cf_sprite_play(&sprite, "hold_down");
 	float draw_scale = 1.f;
 	CF_V2 draw_offset = { 0.f, 0.f };
@@ -182,60 +142,52 @@ main(int argc, const char* argv[]) {
 			cf_draw_pop_color();
 		}
 
-		if (ImGui_Begin("Shape", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
-			if (ImGui_Button("Help")) {
-				show_help = true;
+		if (ImGui_BeginMainMenuBar()) {
+			if (ImGui_BeginMenu("File")) {
+				if (ImGui_MenuItem("New")) {
+				}
+
+				if (ImGui_MenuItem("Open")) {
+				}
+
+				if (ImGui_MenuItem("Save")) {
+				}
+				ImGui_EndMenu();
 			}
 
-			ImGui_SeparatorText("Sprite");
+			if (ImGui_BeginMenu("Sprite")) {
+				if (ImGui_MenuItem("Load")) {
+				}
 
-			bool sprite_changed = ImGui_ComboCharEx("Sprite", &sprite_index, sprites, cf_array_len(sprites), -1);
-			ImGui_SameLine();
-			if (ImGui_Button("Rescan")) {
-				const char* old_sprite_name = sprites[sprite_index];
-				scan_for_sprites(&sprites);
-				bool found = false;
-				for (int i = 0; i < cf_array_len(sprites); ++i) {
-					if (old_sprite_name == sprites[i]) {
-						sprite_index = i;
-						found = true;
-						break;
+				if (ImGui_BeginMenu("Animation")) {
+					for (int i = 0; i < hsize(sprite.animations); ++i) {
+						if (ImGui_MenuItem(sprite.animations[i]->name)) {
+							cf_sprite_play(&sprite, sprite.animations[i]->name);
+						}
 					}
+					ImGui_EndMenu();
 				}
-
-				if (!found) {
-					sprite_index = 0;
-					sprite_changed = true;
-				}
+				ImGui_EndMenu();
 			}
 
-			if (sprite_changed) {
-				const char* sprite_name = sprites[sprite_index];
-				if (sprite_name == cf_sintern("demo_sprite")) {
-					sprite = cf_make_demo_sprite();
-				} else if (str_ends_with(sprite_name, ".png")) {
-					sprite = cf_make_easy_sprite_from_png(sprite_name, NULL);
-				} else {
-					sprite = cf_make_sprite(sprite_name);
+			if (ImGui_BeginMenu("Help")) {
+				if (ImGui_MenuItem("How to use")) {
+					show_help = true;
 				}
-				animation_index = 0;
-				scan_for_animations(&sprite, &animations);
-				cf_sprite_play(&sprite, animations[animation_index]);
+				ImGui_EndMenu();
 			}
-
-			if (ImGui_ComboCharEx("Animation", &animation_index, animations, asize(animations), -1)) {
-				cf_sprite_play(&sprite, animations[animation_index]);
-			}
+			ImGui_EndMainMenuBar();
 		}
-		ImGui_End();
 
-		if (show_help && ImGui_Begin("Help", &show_help, ImGuiWindowFlags_AlwaysAutoResize)) {
-			ImGui_Text(
-				"Left click: Add vertex\n"
-				"Right click: Remove vertex\n"
-				"Middle mouse drag: Pan"
-				"Scroll: Zoom"
-			);
+		if (show_help) {
+			if (ImGui_Begin("Help", &show_help, ImGuiWindowFlags_AlwaysAutoResize)) {
+				ImGui_Text(
+					"Left click: Add vertex\n"
+					"Right click: Remove vertex\n"
+					"Middle mouse drag: Pan\n"
+					"Scroll: Zoom"
+				);
+			}
 			ImGui_End();
 		}
 
@@ -336,5 +288,6 @@ main(int argc, const char* argv[]) {
 	}
 
 	cf_destroy_app();
+	NFD_Quit();
 	return 0;
 }
