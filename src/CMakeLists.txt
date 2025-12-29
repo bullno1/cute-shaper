@@ -18,10 +18,6 @@ if (EMSCRIPTEN)
 		-sALLOW_MEMORY_GROWTH=1
 		-gseparate-dwarf
 	)
-
-	# Force recompile on JS change
-	target_sources(cute-shaper PRIVATE web.js)
-	set_source_files_properties(web.js PROPERTIES HEADER_FILE_ONLY TRUE)
 else ()
 	target_link_libraries(cute-shaper PRIVATE nfd)
 endif ()

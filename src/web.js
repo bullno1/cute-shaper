@@ -63,7 +63,25 @@ addToLibrary({
 		}
 
 		_save_into_file = (path, data, size) => {
-			return false;
+			const a = document.createElement("a");
+			a.target = "_blank";
+			if (path === 0) {
+				a.download = "shape.json";
+			} else {
+				a.download = UTF8ToString(path);
+			}
+
+			const blob = new Blob(
+				[HEAPU8.subarray(data, data + size)],
+				{type: "application/json"}
+			);
+			const url = URL.createObjectURL(blob);
+			a.href = url;
+
+			a.click();
+			URL.revokeObjectURL(url);
+
+			return true;
 		}
 
 		_web_nav = () => {
