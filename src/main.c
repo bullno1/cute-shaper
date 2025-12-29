@@ -542,7 +542,7 @@ main(int argc, const char* argv[]) {
 	NFD_Init();
 #endif
 
-	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT;
+	int options = CF_APP_OPTIONS_WINDOW_POS_CENTERED_BIT | CF_APP_OPTIONS_RESIZABLE_BIT;
 	cf_make_app("cute shaper", 0, 0, 0, 640, 480, options, argv[0]);
 	cf_fs_mount(cf_fs_get_working_directory(), "/", true);
 	cf_app_set_vsync(true);
@@ -574,6 +574,13 @@ main(int argc, const char* argv[]) {
 	while (cf_app_is_running()) {
 		cf_app_update(NULL);
 		cf_sprite_update(&sprite);
+
+		if (cf_app_was_resized()) {
+			int width = cf_app_get_width();
+			int height = cf_app_get_height();
+			cf_app_set_canvas_size(width, height);
+			cf_draw_projection(cf_ortho_2d(0, 0, (float)width, (float)height));
+		}
 
 		shape_t* shape = current_shape(history);
 
