@@ -50,6 +50,7 @@ jobs:
       - name: Build
         run: |
           ./build-web
+          mv bin/RelWithDebInfo/cute-shaper.html bin/RelWithDebInfo/index.html
       - name: Upload static files as artifact
         id: deployment
         uses: actions/upload-pages-artifact@v3 # or specific "vX.X.X" version tag for this action
