@@ -14,7 +14,7 @@ if (EMSCRIPTEN)
 	target_link_options(cute-shaper PRIVATE
 		-sASYNCIFY=1
 		-sASYNCIFY_IMPORTS=web_open_file
-		-sMALLOC=emmalloc-debug
+		-sMALLOC=emmalloc
 		-sALLOW_MEMORY_GROWTH=1
 		-gseparate-dwarf
 	)

@@ -136,6 +136,12 @@ web_open_file(
 	size_t* size
 );
 
+extern enum {
+	NAV_NONE,
+	NAV_BACK,
+	NAV_FORWARD
+} web_nav(void);
+
 extern bool
 save_into_file(const char* path, const void* data, size_t size);
 
@@ -778,6 +784,15 @@ main(int argc, const char* argv[]) {
 
 		// Vertex manipulation
 		if (modal_coro.id == 0 && !ImGui_GetIO()->WantCaptureMouse) {
+#ifndef __EMSCRIPTEN__
+			bool undo = cf_mouse_just_pressed(CF_MOUSE_BUTTON_X1);
+			bool redo = cf_mouse_just_pressed(CF_MOUSE_BUTTON_X2);
+#else
+			int nav = web_nav();
+			bool undo = nav == NAV_BACK;
+			bool redo = nav == NAV_FORWARD;
+#endif
+
 			if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_MIDDLE)) {
 				start_mouse_drag(&modal_coro, &(mouse_drag_info_t){
 					.point = &draw_offset,
@@ -825,7 +840,7 @@ main(int argc, const char* argv[]) {
 					(shape->num_vertices - hovered_vert) * sizeof(shape->verts[0])
 				);
 				--shape->num_vertices;
-			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X1)) {
+			} else if (undo) {
 				int prev_index = history->current_index - 1;
 				if (prev_index < 0) { prev_index += MAX_HISTORY_ENTRIES; }
 				shape_history_entry_t* prev_entry = &history->entries[prev_index];
@@ -833,7 +848,7 @@ main(int argc, const char* argv[]) {
 					history->current_index = prev_index;
 					shape = &prev_entry->shape;
 				}
-			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_X2)) {
+			} else if (redo) {
 				int next_index = (history->current_index + 1) % MAX_HISTORY_ENTRIES;
 				shape_history_entry_t* next_entry = &history->entries[next_index];
 				if (next_entry->version > history->entries[history->current_index].version) {
