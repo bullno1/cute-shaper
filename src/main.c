@@ -237,12 +237,12 @@ load_sprite(const char* path, const void* content, size_t size) {
 	if (str_ends_with(path, ".ase") || str_ends_with(path, ".asperite")) {
 		return cf_make_sprite_from_memory(
 			path,
-			content, size
+			content, (int)size
 		);
 	} else if (str_ends_with(path, ".png")) {
 		CF_Sprite sprite = cf_sprite_defaults();
 		CF_Image img;
-		CF_Result result = cf_image_load_png_from_memory(content, size, &img);
+		CF_Result result = cf_image_load_png_from_memory(content, (int)size, &img);
 		if (!cf_is_error(result)) {
 			sprite = cf_make_easy_sprite_from_pixels(img.pix, img.w, img.h);
 			cf_image_premultiply(&img);
@@ -617,7 +617,7 @@ main(int argc, const char* argv[]) {
 		// Find the closest edge
 		int insert_index = shape->num_vertices;
 		{
-			float closest_distant_sq = 1.0f / 0.0f;
+			float closest_distant_sq = INFINITY;
 			CF_V2 mouse = cf_mul(cf_invert(draw_transform), mouse_world);
 			for (int i = 0; i < shape->num_vertices; ++i) {
 				CF_V2 a = shape->verts[i];
@@ -863,7 +863,7 @@ main(int argc, const char* argv[]) {
 					shape = &next_entry->shape;
 				}
 			} else if (cf_mouse_wheel_motion() != 0.f) {
-				draw_scale += cf_mouse_wheel_motion() * 0.5;
+				draw_scale += cf_mouse_wheel_motion() * 0.5f;
 			}
 		}
 
