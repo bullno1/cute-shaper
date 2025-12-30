@@ -575,6 +575,7 @@ main(int argc, const char* argv[]) {
 		cf_app_update(NULL);
 		cf_sprite_update(&sprite);
 
+		// Handle resize
 		if (cf_app_was_resized()) {
 			int width = cf_app_get_width();
 			int height = cf_app_get_height();
@@ -781,6 +782,7 @@ main(int argc, const char* argv[]) {
 			ImGui_EndPopup();
 		}
 
+		// Current modal action
 		if (modal_coro.id != 0) {
 			cf_coroutine_resume(modal_coro);
 			if (cf_coroutine_state(modal_coro) == CF_COROUTINE_STATE_DEAD) {
@@ -789,7 +791,7 @@ main(int argc, const char* argv[]) {
 			}
 		}
 
-		// Vertex manipulation
+		// Mouse handling
 		if (modal_coro.id == 0 && !ImGui_GetIO()->WantCaptureMouse) {
 #ifndef __EMSCRIPTEN__
 			bool undo = cf_mouse_just_pressed(CF_MOUSE_BUTTON_X1);
@@ -800,19 +802,19 @@ main(int argc, const char* argv[]) {
 			bool redo = nav == NAV_FORWARD;
 #endif
 
-			if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_MIDDLE)) {
+			if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_MIDDLE)) {  // Pan
 				start_mouse_drag(&modal_coro, &(mouse_drag_info_t){
 					.point = &draw_offset,
 					.button = CF_MOUSE_BUTTON_MIDDLE,
 					.scale = 1.f,
 				});
-			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_LEFT)) {
+			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_LEFT)) {  // Drag or add
 				shape = commit_shape(history);
 
 				CF_V2* dragged_vert = NULL;
-				if (hovered_vert >= 0) {
+				if (hovered_vert >= 0) {  // Drag
 					dragged_vert = &shape->verts[hovered_vert];
-				} else if (shape->num_vertices < MAX_NUM_VERTICES) {
+				} else if (shape->num_vertices < MAX_NUM_VERTICES) {  // Add
 					CF_V2 new_vert = cf_mul(cf_invert(draw_transform), mouse_world);
 
 					if (shape->num_vertices < 3) {
@@ -839,7 +841,7 @@ main(int argc, const char* argv[]) {
 						.scale = draw_scale,
 					});
 				}
-			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {
+			} else if (cf_mouse_just_pressed(CF_MOUSE_BUTTON_RIGHT) && hovered_vert >= 0) {  // Delete
 				shape = commit_shape(history);
 				memmove(
 					&shape->verts[hovered_vert],
@@ -862,8 +864,8 @@ main(int argc, const char* argv[]) {
 					history->current_index = next_index;
 					shape = &next_entry->shape;
 				}
-			} else if (cf_mouse_wheel_motion() != 0.f) {
-				draw_scale += cf_mouse_wheel_motion() * 0.5f;
+			} else if (cf_mouse_wheel_motion() != 0.f) {  // Zoom
+				draw_scale += cf_mouse_wheel_motion() * 0.25f;
 			}
 		}
 
@@ -907,6 +909,7 @@ main(int argc, const char* argv[]) {
 			case COMMAND_NOOP: break;
 		}
 
+		// Update title
 		uint64_t shape_version = current_shape_version(history);
 		if (
 			last_shape_version != shape_version
